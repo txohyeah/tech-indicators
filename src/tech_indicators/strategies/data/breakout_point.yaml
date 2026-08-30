@@ -1,0 +1,107 @@
+name: breakout_point
+display_name: 突破点策略
+description: 捕捉经过 5 至 20 根 K 线箱体蓄势后，伴随温和放量向上突破的平台突破点。
+category: breakout
+core_rules: [1, 2, 6]
+
+instructions:
+  - 核心逻辑：先确认短平台蓄势，再确认收盘突破、温和放量和非下降趋势背景。
+  - 适用场景：底部拐点后的第一段突破，或上升趋势中的中继平台突破。
+  - 下降趋势例外：只有日线 MACD 底背离成立时，才允许下降趋势后的突破进入评分。
+
+executable_rules:
+  min_history_days: 120
+  hard_filters:
+    - op: consolidation_box
+      min_len: 5
+      max_len: 20
+      max_range_pct: 18
+      fail_reason: 未形成 5 至 20 根 K 线、振幅不超过 18% 的平台箱体
+    - op: close_breakout_box
+      min_breakout_pct: 0.5
+      fail_reason: 收盘价未有效突破平台最高收盘价
+    - op: volume_ratio_between
+      min: 1.3
+      max: 3.5
+      fail_reason: 突破量能不足或放出天量
+    - op: trend_not_down_or_macd_divergence
+      trend_lookback: 60
+      divergence_lookback: 60
+      fail_reason: 前期仍是下降趋势，且未出现 MACD 日线底背离
+    - op: close_above_ma
+      target: ma20
+      fail_reason: 收盘价未站上 MA20
+    - op: pre_box_drawdown_lte
+      lookback: 30
+      max_drawdown_pct: 22
+      fail_reason: 平台前 30 日高点至平台低点回撤过大，疑似下跌后的弱反弹
+    - op: box_low_not_breaking
+      tolerance_pct: 2
+      fail_reason: 平台后半段低点明显下移，平台结构不稳
+    - op: ma_slope_not_falling
+      target: ma20
+      lookback: 10
+      max_down_slope_pct: 2
+      fail_reason: MA20 近 10 日明显下行，突破背景偏弱
+  scoring:
+    - op: ideal_volume_ratio
+      min: 1.6
+      max: 2.8
+      weight: 20
+      reason: 量能接近理想突破区间
+    - op: box_volume_shrink
+      weight: 15
+      reason: 平台后半段缩量蓄势
+    - op: ma_convergence
+      targets: [ma5, ma10, ma20]
+      max_spread_pct: 8
+      weight: 10
+      reason: MA5/MA10/MA20 黏合
+    - op: breakout_candle_quality
+      weight: 15
+      reason: 突破 K 线收盘位置和上影线质量较好
+    - op: structure_rising
+      lookback: 40
+      weight: 15
+      reason: 近 40 日低点结构抬高
+    - op: relative_low_position
+      lookback: 60
+      max_gain_from_low_pct: 35
+      weight: 10
+      reason: 突破点距离 60 日低点不远
+    - op: upside_space
+      lookback: 120
+      min_space_pct: 8
+      weight: 5
+      reason: 上方仍有一定历史高点空间
+    - op: duanxian_signal
+      signal: volume_support_triangle
+      weight: 8
+      reason: 短线是银量托确认，突破前资金承接改善
+    - op: duanxian_signal
+      signal: bullish_sandwich
+      weight: 6
+      reason: 短线是银多方炮确认，平台突破进攻性增强
+    - op: duanxian_signal
+      signal: ant_channel_hold
+      weight: 5
+      reason: 短线是银蚂蚁功成立，5/10 日均线持股通道保持打开
+    - op: duanxian_signal
+      signal: sesame_volume
+      weight: 4
+      reason: 短线是银芝麻量出现，平台缩量蓄势且未明显破位
+    - op: duanxian_signal
+      signal: bearish_sandwich
+      weight: -12
+      reason: 短线是银空方炮出现，平台突破存在反向派发风险
+    - op: duanxian_signal
+      signal: triple_dead_cross_top
+      weight: -25
+      reason: 短线是银三死叉见顶，突破信号需大幅折价
+    - op: duanxian_signal
+      signal: obv_dead_cross
+      weight: -10
+      reason: 短线是银 OBV 能量潮死叉，突破动能转弱
+  grading:
+    selected_score: 75
+    watch_score: 55

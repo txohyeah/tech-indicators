@@ -1,0 +1,93 @@
+name: golden_bull_refine
+display_name: 金牛通道二次评分
+description: 对已给定的金牛通道候选清单进行二次排序，重点识别牛市区间中的回踩确认机会，并降低熊市假信号和追高风险。
+category: signal_refine
+core_rules: []
+
+instructions:
+  - 适用于用户已经提供金牛选股清单（如 EBK 文件）的场景，不负责从全市场重新发现信号。
+  - K 线短暂低于生命线不直接剔除；若处于牛市区间且叠合买入/金牛起涨信号，可视为深回踩机会。
+  - 原公式中的 XMA 属于未来函数；二次评分将金牛信号作为候选来源，并结合趋势、支撑距离、量能和非未来函数指标排序。
+
+executable_rules:
+  min_history_days: 120
+  base_score: 50
+  base_score_reason: 外部金牛候选清单基础分
+  score_floor: 0
+  score_ceiling: 100
+  hard_filters: []
+  scoring:
+    - op: golden_bull_signal
+      weight: 10
+      reason: 最新交易日复现金牛通道买入/金牛起涨信号
+    - op: golden_bull_profile
+      criterion: bull_context
+      weight: 15
+      reason: 生命线没有明显下行，仍处于可跟踪区间
+    - op: golden_bull_profile
+      criterion: healthy_channel
+      weight: 10
+      reason: 黄/红通道整体健康，没有明显转入下行
+    - op: golden_bull_profile
+      criterion: deep_pullback_opportunity
+      weight: 20
+      reason: 牛市区间内回踩生命线或红色下轨后出现金牛信号
+    - op: golden_bull_profile
+      criterion: near_support
+      weight: 10
+      reason: 当前价格靠近生命线或红色下轨，买点位置不高
+    - op: golden_bull_profile
+      criterion: volume_momentum
+      weight: 10
+      reason: 温和放量且动能改善
+    - op: structure_rising
+      lookback: 40
+      weight: 5
+      reason: 近 40 日低点结构有一定修复
+    - op: duanxian_signal
+      signal: price_support_triangle
+      weight: 6
+      reason: 短线是银价托确认，金牛候选的底部支撑结构增强
+    - op: duanxian_signal
+      signal: volume_support_triangle
+      weight: 6
+      reason: 短线是银量托确认，金牛候选的资金预警改善
+    - op: duanxian_signal
+      signal: bullish_sandwich
+      weight: 5
+      reason: 短线是银多方炮确认，回踩后的进攻性增强
+    - op: duanxian_signal
+      signal: ant_channel_hold
+      weight: 5
+      reason: 短线是银蚂蚁功成立，5/10 日均线持股通道保持打开
+    - op: duanxian_signal
+      signal: sesame_volume
+      weight: 4
+      reason: 短线是银芝麻量出现，金牛候选缩量企稳且未明显破位
+    - op: golden_bull_profile
+      criterion: overextended
+      weight: -20
+      reason: 距离支撑过远或接近上轨，存在追高风险
+    - op: golden_bull_profile
+      criterion: trend_break_risk
+      weight: -30
+      reason: 连续跌破生命线且通道转弱，趋势破坏风险较高
+    - op: golden_bull_profile
+      criterion: bear_context
+      weight: -25
+      reason: 生命线和通道下行，处于熊市假信号高发区
+    - op: duanxian_signal
+      signal: bearish_sandwich
+      weight: -12
+      reason: 短线是银空方炮出现，金牛候选存在派发风险
+    - op: duanxian_signal
+      signal: triple_dead_cross_top
+      weight: -25
+      reason: 短线是银三死叉见顶，金牛候选需大幅折价
+    - op: duanxian_signal
+      signal: three_line_stop
+      weight: -20
+      reason: 短线是银三线止损触发，跌破均线止损线降低评级
+  grading:
+    selected_score: 75
+    watch_score: 45

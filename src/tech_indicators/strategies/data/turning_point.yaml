@@ -1,0 +1,110 @@
+name: turning_point
+display_name: 拐点策略
+description: 捕捉趋势由弱转强的临界点。通过形态/背离确认底部结构，通过放量阳线确认反转信号。
+category: reversal
+core_rules: [1, 2]
+
+instructions:
+  - 核心逻辑：左侧看结构（底背离/抬升），右侧做确认（放量阳线）。
+  - 适用场景：下跌趋势末端、横盘震荡末端、主升浪启动前夜。
+  - 核心规则：必须同时满足形态基础和确认信号两部分。
+
+executable_rules:
+  min_history_days: 80
+  reversal_exemptions:
+    - core_rule: 2
+      reason: 拐点策略允许在趋势反转早期不满足完整多头排列，但必须有右侧确认信号
+  hard_filters:
+    - op: upper_shadow_ratio_lte
+      value: 0.3
+      fail_reason: 上影线过长，冲高回落风险较高
+  scoring:
+    - op: structure_rising
+      lookback: 40
+      weight: 25
+      reason: 低点结构抬升
+    - op: macd_bottom_divergence
+      lookback: 40
+      weight: 25
+      reason: MACD 底背离
+    - op: is_yang
+      weight: 15
+      reason: 阳线确认
+    - op: volume_ratio_gte
+      value: 2.0
+      weight: 20
+      reason: 倍量确认
+    - op: volume_ratio_gte
+      value: 1.5
+      weight: 10
+      reason: 温和放量
+      exclusive_with:
+        - volume_ratio_gte: 2.0
+    - op: bias_abs_lte
+      indicator: bias_ma20
+      value: 5
+      weight: 2
+      reason: 乖离率安全
+    - op: bias_abs_gt
+      indicator: bias_ma20
+      value: 10
+      weight: -20
+      reason: 乖离率超过 10%，等待横盘消化后再判断
+    - op: circ_mv_lt
+      value: 600000
+      weight: -10
+      reason: 流通市值低于 60 亿，流动性和控盘风险需折价
+    - op: suspected_controlled_range
+      weight: -30
+      reason: 半年窄幅震荡且长影线频繁，疑似高度控盘
+    - op: recent_limit_up
+      weight: 5
+      reason: 10 日内出现涨停，短线资金活跃
+    - op: baogongtou_pattern
+      weight: 10
+      reason: 包公头形态确认
+    - op: duanxian_signal
+      signal: price_support_triangle
+      weight: 8
+      reason: 短线是银价托确认，均线由空头收敛转为底部支撑
+    - op: duanxian_signal
+      signal: volume_support_triangle
+      weight: 8
+      reason: 短线是银量托确认，均量线转强提供资金预警
+    - op: duanxian_signal
+      signal: bullish_sandwich
+      weight: 6
+      reason: 短线是银多方炮确认，底部进攻 K 线增强
+    - op: duanxian_signal
+      signal: obv_golden_cross
+      weight: 5
+      reason: 短线是银 OBV 能量潮金叉，资金能量改善
+    - op: duanxian_signal
+      signal: sesame_volume
+      weight: 4
+      reason: 短线是银芝麻量出现，缩量企稳且抛压阶段性减轻
+    - op: duanxian_signal
+      signal: bearish_sandwich
+      weight: -12
+      reason: 短线是银空方炮出现，短线派发风险升高
+    - op: duanxian_signal
+      signal: triple_dead_cross_top
+      weight: -25
+      reason: 短线是银三死叉见顶，价量动能同步转弱
+    - op: duanxian_signal
+      signal: obv_dead_cross
+      weight: -10
+      reason: 短线是银 OBV 能量潮死叉，资金能量转弱
+    - op: survival_pattern
+      min_len: 3
+      max_len: 7
+      threshold: 3.0
+      weight: 10
+      reason: 绝地求生形态确认
+    - op: breakout_ma
+      targets: [ma20, ma60]
+      weight: 5
+      reason: 突破关键均线
+  grading:
+    selected_score: 75
+    watch_score: 55

@@ -1,0 +1,22 @@
+name: golden_bull_channel
+display_name: 金牛通道
+description: 复刻通达信金牛通道的“买入”和“金牛起涨”当日信号，用于选出最新交易日触发提示的股票。
+category: signal
+core_rules: []
+
+instructions:
+  - 该策略直接筛选金牛通道当日信号，不做额外趋势打分。
+  - 原公式中的 XMA 属于未来函数；当前交易日没有未来 K 线时，Python 实现会用已知窗口均值补齐近端缺失值进行实时筛选。
+
+executable_rules:
+  min_history_days: 120
+  hard_filters:
+    - op: golden_bull_signal
+      fail_reason: 当日未出现“买入”或“金牛起涨”信号
+  scoring:
+    - op: golden_bull_signal
+      weight: 100
+      reason: 当日出现“买入”或“金牛起涨”信号
+  grading:
+    selected_score: 100
+    watch_score: 100

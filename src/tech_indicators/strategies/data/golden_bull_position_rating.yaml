@@ -1,0 +1,43 @@
+name: golden_bull_position_rating
+display_name: 金牛通道持仓评级
+description: 对输入股票或持仓清单输出金牛通道持仓评级，支持多评级信号、牛熊通道差异和可选成本价盈亏上下文。
+category: position_rating
+core_rules: []
+
+instructions:
+  - 该策略用于持仓判断或观察池复盘，不是纯粹的全市场选股策略。
+  - 支持 --codes 仅代码技术评级，也支持 --positions CSV 结合 cost_price 输出盈亏上下文。
+  - ratings 数组可同时包含多个评级，例如减仓 5 分和清仓 4 分。
+  - strength 1~5 表示该评级自身强度，不表示买卖方向。
+  - 通达信 XMA 带未来函数特征，本策略只把金牛通道作为趋势结构参考，并叠加位置、量能、破线和通道环境。
+  - upper_below_pressure 表示价格仍在上轨下方遇到压力，只能解释为持有或观察，不能描述成已站上上轨或沿上轨突破。
+  - 原始三线使用业务名称解释：金牛为趋势上轨，金牛趋势为生命线，金牛2为趋势确认线。动态上下轨取三线当日最高值和最低值，并使用 upper_source、lower_source 说明来源，不得遗漏任何原始线。
+  - fresh_upper_breakout 表示今日首次有效突破动态上轨，只能解释为最强持有信号，突破当日不得建议加仓或减仓。
+  - volume_break 只表示当日首次放量向下跌破有效支撑；长期处于支撑下方后的放量上涨不得解释为放量破位。
+  - below_support_volume_recovery 表示价格在支撑下方放量上涨并尝试收复支撑，应解释为观察或持有，不得解释为减仓或清仓。
+  - channel_regime 只由生命线和趋势确认线的相对位置决定：趋势确认线在生命线下方为 bull，生命线在趋势确认线下方为 bear；channel_strength 表示两线分离程度，不是动作强度。
+  - channel_regime 表示通道结构环境，与当日 ratings 动作相互独立；必须原样引用 channel_regime，不得因为出现减仓或清仓动作就自行改写为 bear。解释状态时使用 channel_regime_evidence。
+  - ratings 中 base_strength 是主场景基础强度，strength_adjustment 是辅助指标累计修正，strength 是最终强度。modifiers 和 reason 必须用于解释绝地求生、MACD底背离、卖压衰竭长下影、包公头、10日内涨停或强通道共振；辅助指标只修正强度，不改变动作。
+  - selling_exhaustion_reversal 表示连续缩量下跌后出现长下影的卖盘衰竭辅助形态，只能增强持有/观察等修复可信度并削弱减仓/清仓强度，不得改写通道状态或主场景动作。
+  - 包公头和10日内涨停是短线资金活跃辅助指标；包公头命中时不再额外叠加10日内涨停，避免同一涨停动能重复计数。
+  - 当日跌幅不低于 5% 且收盘位于日内振幅底部 35% 内时，视为大阴线未止跌；通道状态可以继续为 bull，但不得输出建仓、加仓或试仓动作，必须等待止跌确认。
+  - 当日触及或突破上轨后出现放量长上影时，视为突破受阻，必须取消新增仓位并转为观察；若收盘跌回上轨下方或明显收在日内低位，则视为突破失败并允许减仓。
+  - 熊市通道接近或触及上轨只表示压力环境：未收阴时以观察为主并只允许弱减仓；上轨附近收阴但仍守住上轨时允许明确减仓，但不得输出清仓；任一上轨压力场景均不得同时输出建仓、加仓、轻仓加仓或试仓。
+  - 清仓必须经过统一资格门槛：未收阴或仍守住动态上轨时移除清仓；收阴且有效跌破动态上轨时最多输出 1~2 分清仓候选；连续至少两日站不回动态上轨、反抽失败或 volume_break 放量破重要支撑时才允许 4~5 分强清仓。
+  - 持仓报告只展示持股列表和 ratings，不得使用内部 score、grade 或 bucket 解释持仓动作。
+
+executable_rules:
+  min_history_days: 120
+  base_score: 50
+  base_score_reason: 持仓评级基础分
+  score_floor: 0
+  score_ceiling: 100
+  hard_filters: []
+  scoring:
+    - op: golden_bull_position_rating
+      min_strength: 1
+      weight: 50
+      reason: 生成金牛通道持仓多评级信号
+  grading:
+    selected_score: 50
+    watch_score: 1
