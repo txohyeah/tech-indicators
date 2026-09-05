@@ -6,6 +6,7 @@
 公共入口：
 - compute_indicators / compute_golden_bull_lines / check_*  指标计算（indicators）
 - build_golden_bull_trade_plan / build_reburn_buy_trade_plan / build_unified_kline_trade_plan（交易计划）
+- ignition_signal / build_ignition_trade_plan（起爆点择时与买卖状态机）
 - get_strategy / load_strategies / RuleEvaluator（策略定义与评分）
 - run_chart（HTML K 线渲染）
 """
@@ -17,6 +18,7 @@ from . import (
     contract,
     errors,
     golden_bull_trading,
+    ignition,
     indicators,
     kline_decision,
     models,
@@ -31,6 +33,7 @@ __all__ = [
     "contract",
     "errors",
     "golden_bull_trading",
+    "ignition",
     "indicators",
     "kline_decision",
     "models",
