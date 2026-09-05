@@ -1,10 +1,22 @@
+"""低位复燃（reburn）信号与交易计划。
+
+信号定义 = RSI(N) 自下而上穿越触发线，等价通达信「临界起爆点」的
+`CROSS(RSI6, 40)`。该定义是对 2026-09-04 反推出的原件公式的还原，
+取代此前 12 个分支条件的拟合版本（拟合不彻底、且依赖人工调参）。
+
+风险闸门（空头通道 / MA20 下行 / MA60 下行）与量能分级仓位
+（强量 100% / 弱量 50% / 单闸门命中 20%）是自有策略层，予以保留。
+"""
+
 from __future__ import annotations
 
 from typing import Any
 
 import pandas as pd
 
-
+REBURN_RSI_PERIOD = 6          # 通达信参数 N
+REBURN_RSI_TRIGGER = 40.0      # 通达信参数 LL（上限锁 40：只在弱势区触发）
+REBURN_MIN_BARS = 62           # 计算与下游计划所需的最小历史长度
 REBURN_WEAK_TARGET_POSITION_PCT = 0.50
 REBURN_STRONG_TARGET_POSITION_PCT = 1.0
 REBURN_RISK_CAP_POSITION_PCT = 0.20
@@ -49,6 +61,9 @@ def build_reburn_buy_trade_plan(
             "reburn": signal,
             "reburn_risk": risk,
             "volume_vs_prev_ratio": reburn_volume_vs_prev_ratio(history),
+            "reburn_rsi": reburn_rsi_value(history),
+            "reburn_rsi_period": REBURN_RSI_PERIOD,
+            "reburn_rsi_trigger": REBURN_RSI_TRIGGER,
         },
         "candidates": list(fallback_trade_plan.get("candidates", [])),
     }
@@ -142,119 +157,45 @@ def reburn_volume_vs_prev_ratio(history: pd.DataFrame) -> float | None:
     return latest / previous
 
 
+def reburn_rsi(history: pd.DataFrame, period: int | None = None) -> pd.Series:
+    """Wilder RSI，等价通达信 `SMA(MAX(C-REF(C,1),0),N,1)/SMA(ABS(C-REF(C,1)),N,1)*100`。
+
+    必须用**收盘价价差**口径。实测改成涨跌幅口径，与「临界起爆点」的一致率
+    会从 J=0.958 掉到 J=0.837。
+    """
+    n = REBURN_RSI_PERIOD if period is None else max(int(period), 1)
+    delta = history["close"].astype(float).diff()
+    gain = delta.clip(lower=0).ewm(alpha=1.0 / n, adjust=False).mean()
+    loss = (-delta).clip(lower=0).ewm(alpha=1.0 / n, adjust=False).mean()
+    denom = gain + loss
+    return (100.0 * gain / denom).where(denom != 0)
+
+
+def reburn_rsi_value(history: pd.DataFrame) -> float | None:
+    """最后一根 K 线的 RSI 值，供计划/图表展示；无法计算时返回 None。"""
+    if len(history) < 2:
+        return None
+    values = reburn_rsi(history)
+    if values.empty:
+        return None
+    latest = values.iloc[-1]
+    return None if pd.isna(latest) else float(latest)
+
+
 def reburn_signal(history: pd.DataFrame) -> bool:
-    closes = [float(item) for item in history["close"].dropna().tolist()]
-    if len(closes) < 62:
+    """低位复燃：RSI(N) 上穿触发线（`CROSS(RSI6, 40)`）。
+
+    CROSS 自带"一波只报一次"的性质——必须先把 RSI 打回触发线下方，
+    才可能再次上穿，因此不再需要额外的去重、追高、假低位等过滤条件。
+    """
+    if len(history) < REBURN_MIN_BARS:
         return False
-    current = closes[-1]
-    previous = closes[-2]
-    if current <= previous:
+    values = reburn_rsi(history).dropna()
+    if len(values) < 2:
         return False
-
-    r1 = _reburn_window(closes, 10)
-    r2 = _reburn_window(closes, 13)
-    r3 = _reburn_window(closes, 20)
-    r4 = _reburn_window(closes, 30)
-    r5 = _reburn_window(closes, 60)
-    if None in (r1, r2, r3, r4, r5):
-        return False
-    assert r1 and r2 and r3 and r4 and r5
-
-    gain = (current / previous - 1.0) * 100.0
-    range8 = _range_pct(closes[-8:])
-    slope5 = (current / closes[-6] - 1.0) * 100.0 if len(closes) >= 6 and closes[-6] else 0.0
-
-    low_rebound = r1["low_dist"] == 0 and gain >= 4 and r1["rebound"] <= 4.5 and r1["prev_rebound"] <= 0.2
-    mid_low_rebound = (
-        r1["low_dist"] == 0 and gain >= 5 and r1["rebound"] <= 6.5 and r1["prev_rebound"] <= 0.2 and r1["drop"] < 15
-    )
-    deep_low_rebound = (
-        r1["low_dist"] == 0 and r1["drop"] >= 20 and gain >= 3.4 and r1["rebound"] <= 4 and r1["prev_rebound"] <= 0.2
-    )
-    strong_low_rebound = r1["low_dist"] == 0 and gain >= 6.5
-    near_low_allowed = r1["low_dist"] > 0 or low_rebound or mid_low_rebound or deep_low_rebound or strong_low_rebound
-    short_noise_filter = not (r1["low_dist"] <= 1 and r1["prev_rebound"] >= 3)
-    early_noise_filter = not (r3["low_dist"] <= 1 and r3["prev_rebound"] >= 3)
-    weak_rebound_allowed = r1["rebound"] >= 4 or gain >= 2 or r1["low_dist"] <= 2
-    chase_filter = r3["rebound"] <= 25 and r4["rebound"] <= 35 and r5["rebound"] <= 60
-    fake_low_filter = not (r1["low_dist"] == 2 and r1["drop"] >= 15 and r1["rebound"] < 4 and gain < 2.5)
-    crash_first_bull = (
-        r1["drop"] >= 12 and r1["low_dist"] <= 1 and gain < 5 and r1["rebound"] < 5 and range8 >= 12 and slope5 < -5
-    )
-    crash_filter = not crash_first_bull
-
-    cond0 = r3["drop"] >= 25 and 18 <= r3["rebound"] <= 25 and gain >= 0.9 and r5["rebound"] <= 60
-    cond1 = (
-        r1["drop"] >= 8
-        and _reburn_cross(closes, 10, 3)
-        and near_low_allowed
-        and short_noise_filter
-        and early_noise_filter
-        and weak_rebound_allowed
-        and (r1["rebound"] < 4 or r1["rebound"] >= 5 or low_rebound or deep_low_rebound)
-        and chase_filter
-        and fake_low_filter
-    )
-    cond1b = r1["drop"] >= 5 and _reburn_cross(closes, 10, 3) and r1["low_dist"] >= 5 and r1["rebound"] < 4 and gain >= 2 and chase_filter
-    cond2 = (
-        r2["drop"] >= 10
-        and _reburn_cross(closes, 13, 5)
-        and (r2["rebound"] >= 6 or r2["low_dist"] == 1)
-        and (r2["prev_rebound"] < 4.5 or r3["drop"] >= 25)
-        and early_noise_filter
-        and chase_filter
-    )
-    cond3 = (
-        r3["drop"] >= 15
-        and _reburn_cross(closes, 20, 5)
-        and (r2["rebound"] >= 6 or r2["low_dist"] == 1)
-        and (r3["prev_rebound"] < 4.5 or r3["drop"] >= 25)
-        and (r3["prev_rebound"] < 4 or r3["rebound"] <= 7)
-        and early_noise_filter
-        and chase_filter
-    )
-    cond4 = r4["drop"] >= 18 and _reburn_cross(closes, 30, 6) and r3["rebound"] <= 20 and gain >= 3 and r5["rebound"] <= 60
-    cond5 = r5["drop"] >= 30 and r3["drop"] < 12 and _reburn_cross(closes, 60, 3) and r5["rebound"] < 5 and gain >= 2.5
-    cond6 = r5["drop"] >= 30 and r3["drop"] < 12 and r5["low_dist"] == 0 and 1.5 <= r5["rebound"] <= 2.2 and gain >= 1.5
-    patch1 = r1["drop"] >= 5 and r1["drop"] < 8 and _reburn_cross(closes, 10, 3) and 1 <= r1["low_dist"] <= 3 and r1["rebound"] <= 4 and r1["prev_rebound"] <= 1.5 and gain >= 1.5 and r3["rebound"] <= 12
-    patch2 = r1["drop"] >= 8 and _reburn_cross(closes, 10, 3) and r1["prev_rebound"] <= 1 and 4 <= r1["rebound"] <= 5 and gain >= 3 and r5["rebound"] <= 60
-    patch3 = r1["drop"] >= 10 and _reburn_cross(closes, 10, 2) and r1["low_dist"] >= 5 and r1["rebound"] <= 2.5 and gain >= 1.8 and r5["rebound"] <= 60
-    patch4 = r3["drop"] >= 10 and r4["drop"] >= 20 and r1["low_dist"] == 0 and 1.8 <= r1["rebound"] <= 2.4 and gain >= 1.8 and r1["prev_rebound"] <= 0.2 and 5 <= r4["rebound"] <= 8
-    patch5 = r3["drop"] >= 19 and _reburn_cross(closes, 20, 4.5) and 4 <= r3["prev_rebound"] <= 5 and 4.5 <= r3["rebound"] <= 7 and gain >= 0.3 and r1["low_dist"] >= 3 and r5["rebound"] <= 60
-    patch6 = r4["drop"] >= 17 and _reburn_cross(closes, 30, 6) and r4["rebound"] <= 7 and 4 <= r4["prev_rebound"] < 6 and gain >= 1.5 and r5["rebound"] <= 60
-    patch7 = r3["drop"] >= 15 and r4["drop"] >= 18 and r1["low_dist"] >= 4 and 1 <= r1["rebound"] <= 1.8 and 0.9 <= r1["prev_rebound"] <= 1.4 and gain > 0
-    patch8 = r3["drop"] >= 15 and r1["low_dist"] == 0 and 2 <= r1["rebound"] <= 2.5 and gain >= 2 and r3["rebound"] >= 10 and r5["rebound"] <= 60
-    stable = range8 <= 8.8 and sum(1 for idx in range(-8, 0) if closes[idx] >= closes[idx - 1]) >= 3
-    stable_bull = (
-        stable
-        and 0.5 <= gain <= 4.8
-        and r1["rebound"] >= 1.5
-        and r5["rebound"] <= 60
-        and (r1["low_dist"] >= 1 or r1["drop"] <= 5)
-        and (_reburn_cross(closes, 10, 1.5) or _reburn_cross(closes, 10, 3) or gain >= 2.5)
-    )
-
-    base = any(
-        [
-            cond0,
-            cond1,
-            cond1b,
-            cond2,
-            cond3,
-            cond4,
-            cond5,
-            cond6,
-            patch1,
-            patch2,
-            patch3,
-            patch4,
-            patch5,
-            patch6,
-            patch7,
-            patch8,
-        ]
-    )
-    return (base and crash_filter) or (stable_bull and not crash_first_bull)
+    current = float(values.iloc[-1])
+    previous = float(values.iloc[-2])
+    return bool(current > REBURN_RSI_TRIGGER and previous <= REBURN_RSI_TRIGGER)
 
 
 def _ma_down(history: pd.DataFrame, period: int, lookback: int) -> bool:
@@ -268,46 +209,7 @@ def _ma_down(history: pd.DataFrame, period: int, lookback: int) -> bool:
     return bool(latest < previous)
 
 
-def _reburn_window(closes: list[float], period: int) -> dict[str, float | int] | None:
-    if len(closes) < period + 1:
-        return None
-    prior = closes[-period - 1 : -1]
-    low = min(prior)
-    high = max(prior)
-    if low <= 0 or high <= 0:
-        return None
-    low_last_index = max(idx for idx, value in enumerate(prior) if value == low)
-    return {
-        "low": low,
-        "high": high,
-        "drop": (high - low) / high * 100.0,
-        "rebound": (closes[-1] - low) / low * 100.0,
-        "prev_rebound": (closes[-2] - low) / low * 100.0,
-        "low_dist": len(prior) - 1 - low_last_index,
-    }
 
-
-def _reburn_cross(closes: list[float], period: int, threshold: float) -> bool:
-    if len(closes) < period + 2:
-        return False
-    current = _reburn_window(closes, period)
-    previous_prior = closes[-period - 2 : -2]
-    if current is None or not previous_prior:
-        return False
-    previous_low = min(previous_prior)
-    if previous_low <= 0:
-        return False
-    previous_rebound = (closes[-2] - previous_low) / previous_low * 100.0
-    return bool(previous_rebound <= threshold < current["rebound"])
-
-
-def _range_pct(values: list[float]) -> float:
-    if not values:
-        return 0.0
-    low = min(values)
-    if low <= 0:
-        return 0.0
-    return (max(values) - low) / low * 100.0
 
 
 def _optional_float(value: Any) -> float | None:
