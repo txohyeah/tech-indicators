@@ -30,6 +30,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 
@@ -170,18 +172,81 @@ def ignition_signal_breakdown(history: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-def _stop_line(entry_px: float, lows: pd.Series, i: int) -> float:
-    """止损线 = max(买价×(1-10%), 截至昨日的最近 30 根最低价)。
+def ignition_stop_line(entry_price: float, lows, index: int) -> float:
+    """止损线 = max(买价×(1-10%), 截至昨日的最近 ``IGNITION_STOP_BARS`` 根最低价)。
 
     窗口刻意**不含当根**：含当根时 `close < min(...)` 恒不成立，止损位是永远打不到的纸面价。
+    ``lows`` 接受 ndarray 或 Series（内部转 ndarray，NaN 安全）。
     """
-    line = entry_px * (1.0 - IGNITION_STOP_PCT) if IGNITION_STOP_PCT else -float("inf")
-    start = max(0, i - IGNITION_STOP_BARS)
-    if i > start and IGNITION_STOP_BARS:
-        ref = float(lows.iloc[start:i].min())
-        if np.isfinite(ref):
-            line = max(line, ref)
+    line = entry_price * (1.0 - IGNITION_STOP_PCT) if IGNITION_STOP_PCT else -float("inf")
+    if IGNITION_STOP_BARS:
+        arr = np.asarray(lows, dtype=float)
+        start = max(0, index - IGNITION_STOP_BARS)
+        if index > start:
+            ref = arr[start:index]
+            ref = ref[np.isfinite(ref)]
+            if len(ref):
+                line = max(line, float(ref.min()))
     return line
+
+
+@dataclass
+class IgnitionPosition:
+    """逐根推进的持仓 —— 卖出算法的**唯一实现**（2026-09-06 定稿）。
+
+    单票状态机 :func:`ignition_position_state` 与 stock-analytics 的组合/单票回测内核
+    都推这一个对象；规则改动只改这里，两侧自然同步。
+
+    用法：建仓时 :meth:`open_at`，之后每根调 :meth:`step`。
+    step 返回 ``None`` 表示继续持有；否则返回 ``(动作, 原因)``：
+    ``("full", reason)`` 全清 / ``("half", reason)`` 减半（每笔至多一次）。
+
+    优先级（同一根同时触发时）：移动止盈 > 止损 > 上沿出场 —— 与 T40/T41 实测内核一致。
+    停牌根（close 为 NaN/非有限值）整根跳过，不更新任何状态。
+    """
+
+    entry_price: float
+    entry_index: int
+    highest: float
+    stop_line: float
+    running: bool = False
+    half_reduced: bool = False
+
+    @classmethod
+    def open_at(cls, entry_price: float, entry_index: int, entry_high: float, lows) -> "IgnitionPosition":
+        """在 ``entry_index`` 根收盘建仓；初始止损线以截至该根的窗口计算。"""
+        return cls(entry_price=float(entry_price), entry_index=int(entry_index),
+                   highest=float(entry_high),
+                   stop_line=ignition_stop_line(float(entry_price), lows, int(entry_index)))
+
+    def step(self, index: int, open_: float, high: float, low: float, close: float,
+             upper: float, lows) -> tuple[str, str] | None:
+        """推进一根 K 线。``lows`` 传整段最低价序列（滚动止损窗口要用）。"""
+        if not np.isfinite(close):
+            return None                      # 停牌/缺数据：整根跳过
+        self.highest = max(self.highest, float(high))
+        self.stop_line = ignition_stop_line(self.entry_price, lows, index)
+        if IGNITION_USE_TRAILING and not self.running \
+                and self.highest / self.entry_price - 1.0 >= IGNITION_RUN_GAIN_PCT:
+            self.running = True
+        if IGNITION_USE_TRAILING and self.running \
+                and (self.highest - close) >= IGNITION_TRAIL_FRACTION * (self.highest - self.entry_price):
+            return ("full", "trailing_take_profit")
+        if close < self.stop_line:
+            return ("full", "stop_loss")
+        if not self.half_reduced and float(high) >= float(upper) * IGNITION_UPPER_TOUCH \
+                and close < float(upper):
+            body = abs(close - open_)
+            shadow = float(high) - max(close, open_)
+            bearish = close < open_
+            long_shadow = close >= open_ and body > 0 and shadow >= 2.0 * body \
+                and shadow >= 0.03 * close
+            if bearish or long_shadow:
+                if IGNITION_UPPER_EXIT == "full":
+                    return ("full", "upper_pressure_exit")
+                self.half_reduced = True
+                return ("half", "upper_pressure_half")
+        return None
 
 
 def golden_channel_state(history: pd.DataFrame, causal: bool = False) -> pd.DataFrame:
@@ -243,37 +308,19 @@ def ignition_position_state(history: pd.DataFrame) -> dict[str, Any] | None:
     entry = s + 1 if delay else s
     entry_px = float(closes.iloc[entry])
     validate_exit_config()
-    stop = _stop_line(entry_px, lows, entry)
     gold = golden_channel_state(frame, causal=True)
-    hi = float(highs.iloc[entry])
-    running = False
-    half = False
+    lows_arr = lows.to_numpy(dtype=float)
+    pos = IgnitionPosition.open_at(entry_px, entry, float(highs.iloc[entry]), lows_arr)
     exit_reason: str | None = None
     exit_index: int | None = None
     for i in range(entry + 1, len(frame)):
-        close = float(closes.iloc[i])
-        hi = max(hi, float(highs.iloc[i]))
-        stop = _stop_line(entry_px, lows, i)          # 滚动：截至昨日的最近 30 根
-        if IGNITION_USE_TRAILING and not running and hi / entry_px - 1.0 >= IGNITION_RUN_GAIN_PCT:
-            running = True
-        if IGNITION_USE_TRAILING and running and (hi - close) >= IGNITION_TRAIL_FRACTION * (hi - entry_px):
-            exit_reason, exit_index = "trailing_take_profit", i
+        action = pos.step(i, float(opens.iloc[i]), float(highs.iloc[i]), float(lows_arr[i]),
+                          float(closes.iloc[i]), float(gold["upper"].iloc[i]), lows_arr)
+        if action is not None and action[0] == "full":
+            exit_reason, exit_index = action[1], i
             break
-        if close < stop:
-            exit_reason, exit_index = "stop_loss", i
-            break
-        if (not half) and float(highs.iloc[i]) >= float(gold["upper"].iloc[i]) * IGNITION_UPPER_TOUCH \
-                and close < float(gold["upper"].iloc[i]):
-            body = abs(close - float(opens.iloc[i]))
-            shadow = float(highs.iloc[i]) - max(close, float(opens.iloc[i]))
-            bearish = close < float(opens.iloc[i])
-            long_shadow = close >= float(opens.iloc[i]) and body > 0 and shadow >= 2.0 * body \
-                and shadow >= 0.03 * close
-            if bearish or long_shadow:
-                if IGNITION_UPPER_EXIT == "full":
-                    exit_reason, exit_index = "upper_pressure_exit", i
-                    break
-                half = True
+        # ("half", ...)：只减一次半仓，剩余半仓由同一状态机继续管
+    stop, hi, running, half = pos.stop_line, pos.highest, pos.running, pos.half_reduced
     now = len(frame) - 1
     closed = exit_reason is not None
     last_index = exit_index if closed and exit_index is not None else now

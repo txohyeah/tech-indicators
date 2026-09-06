@@ -358,10 +358,10 @@ def test_rolling_stop_ignores_todays_low():
 
 def test_bear_channel_no_longer_forces_exit():
     """旧引擎在熊市通道里撞上沿会强制清仓，因果版已删；清仓理由统一为 upper_pressure_exit。"""
-    src = inspect.getsource(ig.ignition_position_state)
-    assert "upper_pressure_bear_exit" not in src
-    assert "upper_pressure_exit" in src
-    assert 'causal=True' in src
+    step_src = inspect.getsource(ig.IgnitionPosition.step)
+    assert "upper_pressure_bear_exit" not in step_src
+    assert "upper_pressure_exit" in step_src
+    assert 'causal=True' in inspect.getsource(ig.ignition_position_state)
 
 
 def test_half_exit_requires_backstop(monkeypatch):
@@ -372,3 +372,103 @@ def test_half_exit_requires_backstop(monkeypatch):
     monkeypatch.setattr(ig, "IGNITION_STOP_BARS", 0)
     with pytest.raises(ValueError):
         ig.validate_exit_config()
+
+
+# ---------- P2 单一实现：状态机与逐根 step 必须回放一致 ----------
+def _replay(df):
+    """用 IgnitionPosition 逐根推进，返回 (exit_reason, exit_index, 终态)。"""
+    import numpy as _np
+    st = ignition_position_state(df)
+    if st is None or st.get("entry_price") is None:
+        return None
+    closes = df.close.to_numpy(dtype=float)
+    opens = df.open.to_numpy(dtype=float)
+    highs = df.high.to_numpy(dtype=float)
+    lows = df.low.to_numpy(dtype=float)
+    gold = ig.golden_channel_state(df, causal=True)
+    entry = int(_np.where(df.trade_date.astype(str).to_numpy() == st["entry_date"])[0][0])
+    pos = ig.IgnitionPosition.open_at(st["entry_price"], entry, highs[entry], lows)
+    reason, index = None, None
+    for i in range(entry + 1, len(df)):
+        act = pos.step(i, opens[i], highs[i], lows[i], closes[i], gold["upper"].to_numpy()[i], lows)
+        if act is not None and act[0] == "full":
+            reason, index = act[1], i
+            break
+    return reason, index, pos, st
+
+
+def test_step_replay_matches_state_machine():
+    """合成场景 1（止损出场）：逐根 step 与状态机给出的出场点必须一致。"""
+    df = gentle_ignition()
+    entry = ignition_position_state(df)["entry_price"]
+    closes = list(df.close.values) + [entry * 0.92, entry * 0.88]
+    df2 = frame(closes)
+    st = ignition_position_state(df2)
+    reason, index, pos, _ = _replay(df2)
+    assert st["exit_reason"] == reason == "stop_loss"
+    assert st["exit_date"] == str(df2.trade_date.iloc[index])
+    assert pos.half_reduced is False
+
+
+def _with_upper_touch_exit(df, entry, extra_flat=0):
+    """追加：跳涨大阳线（不算压制）→ 摸上沿阴线（触发出场）→ 若干横盘根。
+
+    摸上沿根逐轮迭代：close 由当根 upper 反推（close 改变会移动 MA），直到形态稳定。
+    """
+    closes = list(df.close.values); opens = list(df.open.values)
+    highs = list(df.high.values); lows = list(df.low.values)
+    closes.append(entry * 1.30)                                  # 根A：跳涨大阳线
+    opens.append(closes[-2]); highs.append(closes[-1] * 1.002); lows.append(closes[-2] * 0.997)
+    open_b = closes[-1] * 1.01                                   # 根B：跳高开、阴线收回
+    for _ in range(8):                                           # 收敛：close 由当根 upper 反推
+        f = frame(closes, opens, highs, lows)
+        up = ig.golden_channel_state(f, causal=True)["upper"].iloc[-1]
+        if len(closes) == len(df.close) + 1:                     # 根B 首轮先占位
+            closes.append(0.0); opens.append(open_b); highs.append(0.0); lows.append(0.0)
+        closes[-1] = up * 0.96
+        highs[-1] = max(open_b, up * 1.01)                       # 盘中越过上沿
+        lows[-1] = closes[-1] * 0.997
+    for k in range(extra_flat):                                  # 可选横盘根（不 touch、不触发止损）
+        c = closes[-1]
+        closes.append(c); opens.append(c); highs.append(c * 1.002); lows.append(c * 0.997)
+    return frame(closes, opens, highs, lows)
+
+
+def test_step_replay_matches_state_machine_upper_exit():
+    """合成场景 2（上沿全清）：逐根 step 与状态机出场点一致。"""
+    df = gentle_ignition()
+    entry = ignition_position_state(df)["entry_price"]
+    df2 = _with_upper_touch_exit(df, entry)
+    st = ignition_position_state(df2)
+    reason, index, _, _ = _replay(df2)
+    assert st["exit_reason"] == reason == "upper_pressure_exit"
+    assert st["exit_date"] == str(df2.trade_date.iloc[index])
+
+
+def test_step_replay_half_then_stop(monkeypatch):
+    """合成场景 3（减半模式）：先减半、后止损，state 机的 half_reduced 与逐根 step 一致。"""
+    monkeypatch.setattr(ig, "IGNITION_UPPER_EXIT", "half")
+    df = gentle_ignition()
+    entry = ignition_position_state(df)["entry_price"]
+    df2 = _with_upper_touch_exit(df, entry, extra_flat=3)
+    closes = list(df2.close.values) + [entry * 0.60]
+    opens = list(df2.open.values) + [closes[-2]]
+    highs = list(df2.high.values) + [closes[-1] * 1.002]
+    lows = list(df2.low.values) + [closes[-1] * 0.997]
+    df2 = frame(closes, opens, highs, lows)
+    st = ignition_position_state(df2)
+    reason, index, pos, _ = _replay(df2)
+    assert st["half_reduced"] is True and pos.half_reduced is True
+    assert st["exit_reason"] == reason == "stop_loss"
+
+
+def test_step_nan_close_is_noop():
+    """停牌根（close=NaN）整根跳过：不更新最高点、不触发任何出场。"""
+    df = gentle_ignition()
+    st0 = ignition_position_state(df)
+    entry = st0["entry_price"]
+    lows = df.low.to_numpy(dtype=float)
+    pos = ig.IgnitionPosition.open_at(entry, len(df) - 1, float(df.high.iloc[-1]), lows)
+    hi_before = pos.highest
+    assert pos.step(len(df), 0.0, float("nan"), 0.0, float("nan"), 0.0, lows) is None
+    assert pos.highest == hi_before
