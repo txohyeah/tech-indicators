@@ -24,6 +24,7 @@ from tech_indicators.ignition import (
     ignition_signal,
     ignition_signal_breakdown,
     ignition_signal_series,
+    trend_pullback_signal_series,
 )
 
 
@@ -118,6 +119,34 @@ def test_cross_fires_exactly_once_while_above():
     after = list(df.close.values) + [df.close.values[-1] * (1.03 ** k) for k in range(1, 6)]
     df2 = frame(after)
     assert int(ignition_cross_signal(df2).sum()) == int(cross.sum()), "持续在上方期间不得重复上穿"
+
+
+# ---------- 趋势回踩起爆 ----------
+def test_trend_pullback_requires_cross_volume_or_lower_touch_and_non_bear_channel(monkeypatch):
+    """第二条件为放量或趋势线触及；60 日回撤不是该信号的条件。"""
+    df = deep_pullback_then_bounce()
+
+    def bull_channel(history, causal=False):
+        assert causal is True
+        return pd.DataFrame({"upper": 100.0, "lower": 50.0, "bear": False}, index=history.index)
+
+    monkeypatch.setattr(ig, "golden_channel_state", bull_channel)
+    assert bool(trend_pullback_signal_series(df).iloc[-1])
+
+    low_volume = df.copy()
+    low_volume.loc[low_volume.index[-1], "vol"] = 1199.0
+    low_volume.loc[low_volume.index[-1], "low"] = 51.0
+    assert not bool(trend_pullback_signal_series(low_volume).iloc[-1])
+
+    lower_touch = low_volume.copy()
+    lower_touch.loc[lower_touch.index[-1], "low"] = 50.0
+    assert bool(trend_pullback_signal_series(lower_touch).iloc[-1])
+
+    def bear_channel(history, causal=False):
+        return pd.DataFrame({"upper": 100.0, "lower": 50.0, "bear": True}, index=history.index)
+
+    monkeypatch.setattr(ig, "golden_channel_state", bear_channel)
+    assert not bool(trend_pullback_signal_series(df).iloc[-1])
 
 
 # ---------- 位置过滤 ----------

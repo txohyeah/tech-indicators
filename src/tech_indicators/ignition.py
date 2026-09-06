@@ -46,6 +46,10 @@ IGNITION_OFF_BOTTOM_PCT = 5.0
 IGNITION_UPPER_SHADOW_MAX = 0.75
 IGNITION_DELAY_GAIN_PCT = 5.0    # 起爆日涨幅超过该值则次日再买
 
+# ---- 趋势回踩起爆扫描信号（独立于超跌起爆定稿 v2）----
+TREND_PULLBACK_RSI_TRIGGER = 40.0
+TREND_PULLBACK_VOL5X_MIN = 1.2
+
 # ---- 卖出规则（自有策略层）----
 IGNITION_STOP_PCT = 0.10         # 硬止损：买价下方 10%（与结构位取高者）
 IGNITION_STOP_BARS = 30          # 结构止损：滚动窗口，截至昨日的最近 30 根最低价
@@ -100,6 +104,28 @@ def ignition_cross_signal(history: pd.DataFrame) -> pd.Series:
     rsi = ignition_rsi(history)
     above = rsi > IGNITION_TRIGGER
     return (above & ~above.shift(1).fillna(False).astype(bool)).fillna(False)
+
+
+def trend_pullback_signal_series(history: pd.DataFrame) -> pd.Series:
+    """趋势回踩起爆：RSI6 上穿 40 +（放量或触及趋势线）+ 非空头通道。
+
+    当日成交量与此前 5 根均量比较，不包含当日。替代条件为当日最低价
+    触及或跌破因果金牛通道趋势线（``lower``）。预热不足或通道无有效值时均不触发。
+    """
+    index = history.index
+    if len(history) < 6:
+        return pd.Series(False, index=index, dtype=bool)
+    rsi = ignition_rsi(history)
+    above = rsi > TREND_PULLBACK_RSI_TRIGGER
+    cross = above & ~above.shift(1, fill_value=False)
+    vol = pd.to_numeric(history["vol"], errors="coerce")
+    vol5 = vol.rolling(5).mean().shift(1)
+    volume_ok = vol >= vol5 * TREND_PULLBACK_VOL5X_MIN
+    channel = golden_channel_state(history, causal=True)
+    lower = channel["lower"]
+    touch_lower = pd.to_numeric(history["low"], errors="coerce") <= lower
+    channel_ok = channel["upper"].notna() & lower.notna() & channel["bear"].eq(False)
+    return (cross & (volume_ok | touch_lower) & channel_ok).fillna(False).astype(bool)
 
 
 def ignition_position_filter(history: pd.DataFrame) -> pd.Series:
