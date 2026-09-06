@@ -45,12 +45,29 @@ IGNITION_UPPER_SHADOW_MAX = 0.75
 IGNITION_DELAY_GAIN_PCT = 5.0    # 起爆日涨幅超过该值则次日再买
 
 # ---- 卖出规则（自有策略层）----
-IGNITION_STOP_PCT = 0.10
-IGNITION_STOP_BARS = 5           # 起爆点及其前 4 根
+IGNITION_STOP_PCT = 0.10         # 硬止损：买价下方 10%（与结构位取高者）
+IGNITION_STOP_BARS = 30          # 结构止损：滚动窗口，截至昨日的最近 30 根最低价
 IGNITION_RUN_GAIN_PCT = 0.20     # 利润奔跑启动门槛
-IGNITION_TRAIL_FRACTION = 0.25   # 回撤总涨幅的该比例即离场
+IGNITION_TRAIL_FRACTION = 0.35   # 回撤总涨幅的该比例即离场（0.35 实测优于 0.25）
 IGNITION_UPPER_TOUCH = 0.98      # 盘中触及上沿的容差
 IGNITION_MIN_BARS = 80
+# ---- 2026-09-05 因果版 + 15 槽组合层重测定稿（见 memory/2026-09-05/exit-rules-causal-final.md）----
+IGNITION_UPPER_EXIT = "full"         # 撞上沿的出场方式：full=全清（已验证）/ half=减半（会占槽位，组合层更差）
+IGNITION_USE_TRAILING = False        # 移动止盈默认关闭：关闭的 C2 在无前视池上年化与回撤都优于开启的 C3
+IGNITION_REANCHOR = False            # 「新起爆点重锚止损」默认关闭：滚动止损已包含该效果，且旧结论出自坏引擎
+SUPPORTED_UPPER_EXITS = ("full", "half")
+
+
+def validate_exit_config() -> None:
+    """挡住会退化成「买入持有」的配置组合。
+
+    减半若不配任何最终清仓规则（移动止盈或结构/硬止损），剩下那半仓会永久持有 ——
+    实测这种配置在自选池上跑出 +61.9%，看着像策略，其实是买入持有换了个马甲。
+    """
+    if IGNITION_UPPER_EXIT not in SUPPORTED_UPPER_EXITS:
+        raise ValueError(f"IGNITION_UPPER_EXIT 只能是 {SUPPORTED_UPPER_EXITS}，收到 {IGNITION_UPPER_EXIT!r}")
+    if IGNITION_UPPER_EXIT == "half" and not (IGNITION_USE_TRAILING or IGNITION_STOP_BARS or IGNITION_STOP_PCT):
+        raise ValueError("减半出场必须有兜底清仓规则（移动止盈或止损），否则退化为买入持有")
 
 
 def _returns(closes: pd.Series) -> pd.Series:
@@ -153,6 +170,20 @@ def ignition_signal_breakdown(history: pd.DataFrame) -> dict[str, Any]:
     }
 
 
+def _stop_line(entry_px: float, lows: pd.Series, i: int) -> float:
+    """止损线 = max(买价×(1-10%), 截至昨日的最近 30 根最低价)。
+
+    窗口刻意**不含当根**：含当根时 `close < min(...)` 恒不成立，止损位是永远打不到的纸面价。
+    """
+    line = entry_px * (1.0 - IGNITION_STOP_PCT) if IGNITION_STOP_PCT else -float("inf")
+    start = max(0, i - IGNITION_STOP_BARS)
+    if i > start and IGNITION_STOP_BARS:
+        ref = float(lows.iloc[start:i].min())
+        if np.isfinite(ref):
+            line = max(line, ref)
+    return line
+
+
 def golden_channel_state(history: pd.DataFrame, causal: bool = False) -> pd.DataFrame:
     """金牛通道状态：upper=通道上沿，bear=趋势确认线压在生命线上方（熊市通道）。
 
@@ -206,33 +237,29 @@ def ignition_position_state(history: pd.DataFrame) -> dict[str, Any] | None:
             "half_reduced": False,
             "exit_reason": None,
             "exit_date": None,
-            "bear_channel": bool(golden_channel_state(frame)["bear"].iloc[-1]),
+            "bear_channel": bool(golden_channel_state(frame, causal=True)["bear"].iloc[-1]),
             "closed": False,
         }
     entry = s + 1 if delay else s
     entry_px = float(closes.iloc[entry])
-    stop = max(entry_px * (1.0 - IGNITION_STOP_PCT), float(lows.iloc[max(0, s - IGNITION_STOP_BARS + 1):s + 1].min()))
-    gold = golden_channel_state(frame)
+    validate_exit_config()
+    stop = _stop_line(entry_px, lows, entry)
+    gold = golden_channel_state(frame, causal=True)
     hi = float(highs.iloc[entry])
     running = False
     half = False
-    last_signal = s
     exit_reason: str | None = None
     exit_index: int | None = None
     for i in range(entry + 1, len(frame)):
         close = float(closes.iloc[i])
         hi = max(hi, float(highs.iloc[i]))
-        if not running and hi / entry_px - 1.0 >= IGNITION_RUN_GAIN_PCT:
+        stop = _stop_line(entry_px, lows, i)          # 滚动：截至昨日的最近 30 根
+        if IGNITION_USE_TRAILING and not running and hi / entry_px - 1.0 >= IGNITION_RUN_GAIN_PCT:
             running = True
-        if not running and bool(sig.iloc[i]) and i > last_signal:
-            stop = max(entry_px * (1.0 - IGNITION_STOP_PCT),
-                       float(lows.iloc[max(0, i - IGNITION_STOP_BARS + 1):i + 1].min()))
-            last_signal = i
-        if running:
-            if (hi - close) >= IGNITION_TRAIL_FRACTION * (hi - entry_px):
-                exit_reason, exit_index = "trailing_take_profit", i
-                break
-        elif close < stop:
+        if IGNITION_USE_TRAILING and running and (hi - close) >= IGNITION_TRAIL_FRACTION * (hi - entry_px):
+            exit_reason, exit_index = "trailing_take_profit", i
+            break
+        if close < stop:
             exit_reason, exit_index = "stop_loss", i
             break
         if (not half) and float(highs.iloc[i]) >= float(gold["upper"].iloc[i]) * IGNITION_UPPER_TOUCH \
@@ -243,8 +270,8 @@ def ignition_position_state(history: pd.DataFrame) -> dict[str, Any] | None:
             long_shadow = close >= float(opens.iloc[i]) and body > 0 and shadow >= 2.0 * body \
                 and shadow >= 0.03 * close
             if bearish or long_shadow:
-                if bool(gold["bear"].iloc[i]):
-                    exit_reason, exit_index = "upper_pressure_bear_exit", i
+                if IGNITION_UPPER_EXIT == "full":
+                    exit_reason, exit_index = "upper_pressure_exit", i
                     break
                 half = True
     now = len(frame) - 1
@@ -364,13 +391,13 @@ def build_ignition_trade_plan(
         trail = state["highest_since_entry"] - IGNITION_TRAIL_FRACTION * (
             state["highest_since_entry"] - state["entry_price"])
         notes.append(f"profit mode on: sell if close drops below {round(trail, 4)}")
-        plan["stop_line_name"] = "trailing 25% of total gain"
+        plan["stop_line_name"] = f"trailing {IGNITION_TRAIL_FRACTION:.0%} of total gain"
         plan["stop_line_price"] = round(trail, 4)
     else:
         notes.append("not in profit mode yet: fixed stop still armed, a new ignition point would re-anchor it")
     if state["half_reduced"]:
         notes.append("half position already reduced at the Golden Bull upper line")
     if state["bear_channel"]:
-        notes.append("bear channel: next failed attempt at the upper line is a full exit, not a half")
+        notes.append("bear channel is informational only - it is NOT an exit trigger for deep-dip entries")
     plan["reason"] = notes
     return plan

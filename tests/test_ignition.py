@@ -5,9 +5,13 @@
 
 from __future__ import annotations
 
+import inspect
+
 import numpy as np
 import pandas as pd
 import pytest
+
+import tech_indicators.ignition as ig
 
 from tech_indicators.ignition import (
     IGNITION_TRIGGER,
@@ -209,20 +213,32 @@ def test_closed_state_reports_exit_not_today():
     assert st["last_close"] == pytest.approx(999.0, rel=1e-6)            # 当前价仍如实给出
 
 
-def test_profit_mode_switches_to_trailing_only():
-    """涨过 20% 后进入利润奔跑：固定止损不再起作用，只认回撤总涨幅 25%。"""
+def test_profit_mode_switches_to_trailing_only(monkeypatch):
+    """显式打开移动止盈：涨过 20% 进入利润奔跑，回撤总涨幅 35% 才离场。
+
+    移动止盈默认是关的（15 槽组合层实测关闭的 C2 优于开启的 C3），所以要用 monkeypatch 打开。
+    """
+    monkeypatch.setattr(ig, "IGNITION_USE_TRAILING", True)
     df = gentle_ignition()
     entry = ignition_position_state(df)["entry_price"]
-    stop = ignition_position_state(df)["stop_line"]
-    closes = list(df.close.values) + [entry * 1.40, entry * 1.45, entry * 1.30]
+    closes = list(df.close.values) + [entry * 1.40, entry * 1.50, entry * 1.10]
     st = ignition_position_state(frame(closes))
     assert st["running"] is True
     assert st["closed"] and st["exit_reason"] == "trailing_take_profit"
-    assert entry * 1.30 > stop or st["exit_reason"] != "stop_loss"
 
 
-def test_trailing_keeps_running_when_gain_small():
-    """涨幅未达 20% 时不进入利润奔跑，小幅回落不应被移动止盈打掉。"""
+def test_trailing_disabled_by_default():
+    """默认配置（C2 定稿）：同样的深回落既不进利润奔跑、也不出场。"""
+    df = gentle_ignition()
+    entry = ignition_position_state(df)["entry_price"]
+    closes = list(df.close.values) + [entry * 1.40, entry * 1.50, entry * 1.10]
+    st = ignition_position_state(frame(closes))
+    assert st["running"] is False and st["closed"] is False
+
+
+def test_trailing_keeps_running_when_gain_small(monkeypatch):
+    """（开关打开时）涨幅未达 20% 不进利润奔跑，小幅回落不应被移动止盈打掉。"""
+    monkeypatch.setattr(ig, "IGNITION_USE_TRAILING", True)
     df = gentle_ignition()
     entry = ignition_position_state(df)["entry_price"]
     closes = list(df.close.values) + [entry * 1.10, entry * 1.06]
@@ -285,3 +301,74 @@ def test_smoke_on_real_fixture(daily_600519):
     st = ignition_position_state(df)
     if st is not None:
         assert st["entry_price"] > 0 and st["bars_held"] >= 0
+
+
+# ---------- 2026-09-05 因果版定稿契约 ----------
+def test_default_exit_config_matches_validated_setup():
+    """默认配置必须就是 15 槽组合层验证过的 C2，不许悄悄漂移。"""
+    assert ig.IGNITION_UPPER_EXIT == "full"
+    assert ig.IGNITION_USE_TRAILING is False
+    assert ig.IGNITION_STOP_BARS == 30
+    assert ig.IGNITION_STOP_PCT == 0.10
+    assert ig.IGNITION_TRAIL_FRACTION == 0.35
+    ig.validate_exit_config()          # 默认组合必须合法
+
+
+def test_rolling_stop_excludes_current_bar():
+    """止损窗口不含当根：昨低 51.5、今收 51.0 → 必须触发；若含当根（窗口=50.9）则永远打不到。"""
+    df = gentle_ignition()
+    entry = ignition_position_state(df)["entry_price"]
+    # 起爆后 gently 回落到 51.8 并横盘 40 根（low 51.5，收盘从不低于昨低 → 不触发止损）
+    closes = list(df.close.values); opens = list(df.open.values)
+    highs = list(df.high.values); lows = list(df.low.values)
+    px = closes[-1]
+    for _ in range(25):                       # 温和回落 56 → 51.8
+        px *= 0.997
+        closes.append(px); opens.append(px * 1.001)
+        highs.append(max(closes[-1], opens[-1]) * 1.002)
+        lows.append(min(closes[-1], opens[-1]) * 0.99)
+    for _ in range(40):                       # 横盘 51.8
+        closes.append(51.8); opens.append(51.8)
+        highs.append(52.0); lows.append(51.5)
+    closes.append(51.0); opens.append(51.8)   # 末日：收盘砸穿昨低 51.5
+    highs.append(51.8); lows.append(50.9)
+    st = ignition_position_state(frame(closes, opens, highs, lows))
+    assert st["closed"] and st["exit_reason"] == "stop_loss"
+
+
+def test_rolling_stop_ignores_todays_low():
+    """当根的长下影不参与止损线：今低砸到 50.0 但收盘收回 51.8 → 不出场。"""
+    df = gentle_ignition()
+    closes = list(df.close.values); opens = list(df.open.values)
+    highs = list(df.high.values); lows = list(df.low.values)
+    px = closes[-1]
+    for _ in range(25):
+        px *= 0.997
+        closes.append(px); opens.append(px * 1.001)
+        highs.append(max(closes[-1], opens[-1]) * 1.002)
+        lows.append(min(closes[-1], opens[-1]) * 0.99)
+    for _ in range(40):
+        closes.append(51.8); opens.append(51.8)
+        highs.append(52.0); lows.append(51.5)
+    closes.append(51.8); opens.append(51.8)   # 末日：长下影 50.0，收盘收回
+    highs.append(51.8); lows.append(50.0)
+    st = ignition_position_state(frame(closes, opens, highs, lows))
+    assert st["closed"] is False
+
+
+def test_bear_channel_no_longer_forces_exit():
+    """旧引擎在熊市通道里撞上沿会强制清仓，因果版已删；清仓理由统一为 upper_pressure_exit。"""
+    src = inspect.getsource(ig.ignition_position_state)
+    assert "upper_pressure_bear_exit" not in src
+    assert "upper_pressure_exit" in src
+    assert 'causal=True' in src
+
+
+def test_half_exit_requires_backstop(monkeypatch):
+    """减半出场若无任何兜底清仓（止盈/止损全关），必须直接报错，不许退化成买入持有。"""
+    monkeypatch.setattr(ig, "IGNITION_UPPER_EXIT", "half")
+    monkeypatch.setattr(ig, "IGNITION_USE_TRAILING", False)
+    monkeypatch.setattr(ig, "IGNITION_STOP_PCT", 0.0)
+    monkeypatch.setattr(ig, "IGNITION_STOP_BARS", 0)
+    with pytest.raises(ValueError):
+        ig.validate_exit_config()
