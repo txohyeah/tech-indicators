@@ -153,12 +153,16 @@ def ignition_signal_breakdown(history: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-def golden_channel_state(history: pd.DataFrame) -> pd.DataFrame:
+def golden_channel_state(history: pd.DataFrame, causal: bool = False) -> pd.DataFrame:
     """金牛通道状态：upper=通道上沿，bear=趋势确认线压在生命线上方（熊市通道）。
 
     卖出规则的「冲不过上沿」与「熊市通道清仓」都依赖这两项，回测与实盘共用本函数。
+
+    ⚠️ ``causal`` 必须显式选对：默认 ``False`` 与通达信图一致，但**含未来函数**
+    （第 i 根用了其后 12 根数据，且图上最近 12 根会随行情漂移）。
+    **做回测或"当时是否触发"的判断时一律传 ``causal=True``**；只有画图和与通达信对表时用默认。
     """
-    lines = compute_golden_bull_lines(history)
+    lines = compute_golden_bull_lines(history, causal=causal)
     out = pd.DataFrame(index=lines.index)
     out["upper"] = lines["channel_upper"]
     out["lower"] = lines["golden_bull_trend"]
