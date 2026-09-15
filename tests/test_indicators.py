@@ -90,3 +90,35 @@ def test_short_frame_still_available_with_history_days():
     ind = compute_indicators(small)
     assert ind["available"] is True
     assert ind["history_days"] == 3
+
+
+def _flat_tail_frame(flat_bars: int, bars: int = 220) -> pd.DataFrame:
+    """构造末尾 ``flat_bars`` 根完全同价的行情（连续同价 = 价格零波动）。"""
+    import numpy as np
+
+    base = np.linspace(10.0, 20.0, bars - flat_bars)
+    close = np.concatenate([base, np.full(flat_bars, base[-1])]) if flat_bars else base
+    return pd.DataFrame(
+        {
+            "trade_date": pd.date_range("2020-01-01", periods=len(close), freq="B").strftime("%Y%m%d"),
+            "open": close,
+            "high": close * 1.01,
+            "low": close * 0.99,
+            "close": close,
+            "vol": [1000.0] * len(close),
+        }
+    )
+
+
+def test_check_golden_bull_channel_survives_flat_tail():
+    """末尾连续同价 ≥7 根时不得抛 DataError（停牌补数、长期横盘会造出这种数据）。
+
+    原实现写的是 ``denominator.replace(0, pd.NA)``：float64 列被 pd.NA 替换后会退化
+    成 object dtype，而末尾连续同价恰好让分母整段为 0，紧接着的聚合就抛
+    ``DataError: No numeric types to aggregate``。
+    阈值是 7 根：分母经过两层 XMA(周期 6，半窗口 3)，第 7 根起窗口内全是 0。
+    实测边界：6 根正常，7 根起抛错。
+    """
+    for flat in (0, 6, 7, 10, 30):
+        result = check_golden_bull_channel(_flat_tail_frame(flat))
+        assert isinstance(result, dict), f"末尾同价 {flat} 根时应当返回结果而不是抛错"

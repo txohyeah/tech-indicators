@@ -141,7 +141,10 @@ def build_chart_frame(frame: pd.DataFrame, config: ChartSeriesConfig) -> pd.Data
     if config.volume_ma:
         data["vol_ma5"] = data["vol"].rolling(5, min_periods=5).mean()
     if config.golden_bull:
-        lines = compute_golden_bull_lines(data)
+        # 画图必须用「图上模式」：与通达信显示逐值一致（含未来函数）。
+        # compute_golden_bull_lines 的默认值是 causal=True（供回测/实盘判定用），
+        # 所以这里必须显式声明，否则画出来的线和通达信对不上。
+        lines = compute_golden_bull_lines(data, causal=False)
         for column in lines.columns:
             data[column] = lines[column].values
     return data

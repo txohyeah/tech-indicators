@@ -1050,7 +1050,11 @@ def check_golden_bull_channel(data: pd.DataFrame) -> dict[str, Any]:
 
     close_delta = frame["close"] - frame["close"].shift(1)
     denominator = _tdx_xma(_tdx_xma(close_delta.abs(), 6), 6)
-    var23 = 100 * _tdx_xma(_tdx_xma(close_delta, 6), 6) / denominator.replace(0, pd.NA)
+    # 分母为 0 表示这一段完全没有价格波动（连续同价），此时指标无定义，置 NaN。
+    # 原写法 denominator.replace(0, pd.NA)：float64 列被 pd.NA 替换后会退化成 object
+    # dtype，末尾连续 7 根以上同价（分母整段为 0）时后续聚合直接抛
+    # DataError: No numeric types to aggregate。改用 .mask() 保持 float64 数值类型。
+    var23 = 100 * _tdx_xma(_tdx_xma(close_delta, 6), 6) / denominator.mask(denominator == 0)
     pullback_buy = (
         _llv(var23, 2).eq(_llv(var23, 7))
         & _count(var23.lt(0), 2).gt(0)
@@ -1122,15 +1126,19 @@ def _causal_double_xma(series: pd.Series, period: int = GOLDEN_BULL_XMA_PERIOD) 
     return values.rolling(window).mean().rolling(window).mean()
 
 
-def compute_golden_bull_lines(data: pd.DataFrame, causal: bool = False) -> pd.DataFrame:
+def compute_golden_bull_lines(data: pd.DataFrame, causal: bool = True) -> pd.DataFrame:
     """金牛通道三线。
 
-    ``causal=False``（默认）：与通达信画图完全一致，**含未来函数**——第 i 根用了后面
+    ``causal=True``（默认，2026-09-15 起）：严格因果版，回测与实盘判定一律用它。
+    ``causal=False``：与通达信画图完全一致，**含未来函数**——第 i 根用了后面
     ``period//2`` 根的数据，最近 12 根的值会随后续行情被改写。只能用于绘图/复盘看图，
-    **禁止用于回测或任何"当时能不能看到"的判断**。
-    ``causal=True``：严格因果版，回测与实盘判定一律用它。
+    **禁止用于回测或任何"当时能不能看到"的判断**；画图场景由 ``chart.py`` 显式传入。
     两者在历史中段差异很小（上沿相对收盘价中位 1.25%），但在"是否触及上沿"这类
     阈值判断上约有 4.7% 的 K 线会翻转，所以必须显式选对。
+
+    默认值原为 ``False``。改默认的起因：``check_golden_bull_channel`` 等实盘判定函数
+    内部调用本函数时未显式传参，等于拿"事后会变的线"做实时判断，属未来函数。
+    把安全的一侧设为默认，是让"忘记传参"这个失误朝向安全方向。
     """
     required = ["high", "low"]
     missing = [column for column in required if column not in data]
@@ -1890,7 +1898,8 @@ def _near_upper_ratio(close: pd.Series, upper: pd.Series, lookback: int, thresho
     if len(frame) < lookback:
         return 0.0
     window = frame.tail(lookback)
-    distance = (window.iloc[:, 1] - window.iloc[:, 0]).abs() / window.iloc[:, 0].replace(0, pd.NA) * 100
+    # 同 _var23 处：用 .mask() 而非 .replace(0, pd.NA)，避免 float64 退化成 object dtype
+    distance = (window.iloc[:, 1] - window.iloc[:, 0]).abs() / window.iloc[:, 0].mask(window.iloc[:, 0] == 0) * 100
     return float(distance.le(threshold_pct).mean())
 
 

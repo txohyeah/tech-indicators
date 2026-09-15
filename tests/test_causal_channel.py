@@ -54,7 +54,7 @@ def test_appending_future_bars_does_not_move_causal_values():
     """在同一个前缀后面接不同的未来行情，因果版历史值必须一动不动。"""
     prefix = FRAME.iloc[:200]
     base = compute_golden_bull_lines(prefix, causal=True)["channel_upper"].iloc[-1]
-    chart_base = compute_golden_bull_lines(prefix)["channel_upper"].iloc[-1]
+    chart_base = compute_golden_bull_lines(prefix, causal=False)["channel_upper"].iloc[-1]
     def joined_with_dates(tail: pd.DataFrame) -> pd.DataFrame:
         out = pd.concat([prefix, tail], ignore_index=True)
         # compute_golden_bull_lines 内部按 trade_date 排序，拼接段必须给连续日期，否则会被打乱
@@ -66,7 +66,7 @@ def test_appending_future_bars_does_not_move_causal_values():
     for joined in futures:
         after = compute_golden_bull_lines(joined, causal=True)["channel_upper"].iloc[199]
         assert after == pytest.approx(base, rel=0, abs=1e-9)          # 因果版不受未来影响
-    moved = any(abs(compute_golden_bull_lines(j)["channel_upper"].iloc[199] - chart_base) > 1e-9
+    moved = any(abs(compute_golden_bull_lines(j, causal=False)["channel_upper"].iloc[199] - chart_base) > 1e-9
                 for j in futures)
     assert moved, "图上模式对同一根的值竟然不随未来数据变化？需复查 _tdx_xma"
 
@@ -82,18 +82,46 @@ def test_chart_mode_is_not_truncation_invariant_by_design():
     assert changed > 30, "图上模式竟然不含未来依赖？说明 _tdx_xma 被改过，需同步复查本测试"
 
 
-def test_default_argument_keeps_chart_behaviour():
-    """默认参数必须与改动前逐值相同，保证 chart.py 等既有调用方零影响。"""
+def test_chart_mode_formula_matches_tdx_xma():
+    """图上模式（causal=False）仍是通达信那套双重 XMA，逐值可复算。"""
     hx = _tdx_xma(_tdx_xma(FRAME["high"], GOLDEN_BULL_XMA_PERIOD), GOLDEN_BULL_XMA_PERIOD)
     lx = _tdx_xma(_tdx_xma(FRAME["low"], GOLDEN_BULL_XMA_PERIOD), GOLDEN_BULL_XMA_PERIOD)
     line_a = (hx - lx) + hx                       # golden_bull
     line_b = lx - (hx - lx)                       # golden_bull_trend（生命线）
     line_c = line_b.ewm(span=25, adjust=False).mean()
     expected = np.maximum(np.maximum(line_a.values, line_b.values), line_c.values)
-    got = compute_golden_bull_lines(FRAME)
+    got = compute_golden_bull_lines(FRAME, causal=False)
     assert np.allclose(got["channel_upper"].values, expected, equal_nan=True)
-    assert not got["channel_upper"].equals(
-        compute_golden_bull_lines(FRAME, causal=True)["channel_upper"])     # 两版确实不同
+
+
+def test_default_argument_is_causal():
+    """默认参数必须是因果版（2026-09-15 决策）。
+
+    默认值原为 ``causal=False``（图上模式，含未来函数）。问题在于
+    ``check_golden_bull_channel`` 等**实盘判定**函数内部调用本函数时没有显式传参，
+    等于拿"事后会被改写的线"做实时判断 —— 典型的未来函数。
+    把默认值换成安全的一侧，是为了让"忘记传参"这个失误朝向不出错的方向。
+    需要用图上一侧的场景（``chart.py`` 绘图）改为显式声明，见下一条测试。
+    """
+    got = compute_golden_bull_lines(FRAME)["channel_upper"]
+    assert got.equals(compute_golden_bull_lines(FRAME, causal=True)["channel_upper"])
+    assert not got.equals(compute_golden_bull_lines(FRAME, causal=False)["channel_upper"])
+
+
+def test_chart_module_explicitly_requests_chart_mode():
+    """chart.py 必须显式传 causal=False，否则画出来的线与通达信对不上。
+
+    默认值改成 causal=True 之后，绘图这条唯一需要"图上模式"的路径必须自己声明，
+    这条测试钉住它，防止以后被当成冗余参数删掉。
+    """
+    import inspect
+
+    from tech_indicators import chart
+
+    src = inspect.getsource(chart)
+    assert "compute_golden_bull_lines(data, causal=False)" in src, (
+        "chart.py 必须显式传 causal=False（画图用图上模式），否则线上图与通达信不一致"
+    )
 
 
 def test_causal_mode_warms_up_with_nan_then_becomes_finite():
