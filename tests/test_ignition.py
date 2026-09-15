@@ -256,13 +256,13 @@ def test_profit_mode_switches_to_trailing_only(monkeypatch):
     assert st["closed"] and st["exit_reason"] == "trailing_take_profit"
 
 
-def test_trailing_disabled_by_default():
-    """默认配置（C2 定稿）：同样的深回落既不进利润奔跑、也不出场。"""
+def test_trailing_enabled_by_default():
+    """默认配置（2026-09-15 定稿）：深回落会进入利润奔跑并按移动止盈出场。"""
     df = gentle_ignition()
     entry = ignition_position_state(df)["entry_price"]
     closes = list(df.close.values) + [entry * 1.40, entry * 1.50, entry * 1.10]
     st = ignition_position_state(frame(closes))
-    assert st["running"] is False and st["closed"] is False
+    assert st["running"] is True and st["closed"] is True
 
 
 def test_trailing_keeps_running_when_gain_small(monkeypatch):
@@ -334,9 +334,9 @@ def test_smoke_on_real_fixture(daily_600519):
 
 # ---------- 2026-09-05 因果版定稿契约 ----------
 def test_default_exit_config_matches_validated_setup():
-    """默认配置必须就是 15 槽组合层验证过的 C2，不许悄悄漂移。"""
+    """默认配置（2026-09-15 起：上沿全清 + 移动止盈开启 + 滚动结构止损），不许悄悄漂移。"""
     assert ig.IGNITION_UPPER_EXIT == "full"
-    assert ig.IGNITION_USE_TRAILING is False
+    assert ig.IGNITION_USE_TRAILING is True
     assert ig.IGNITION_STOP_BARS == 30
     assert ig.IGNITION_STOP_PCT == 0.10
     assert ig.IGNITION_TRAIL_FRACTION == 0.35
@@ -475,8 +475,13 @@ def test_step_replay_matches_state_machine_upper_exit():
 
 
 def test_step_replay_half_then_stop(monkeypatch):
-    """合成场景 3（减半模式）：先减半、后止损，state 机的 half_reduced 与逐根 step 一致。"""
+    """合成场景 3（减半模式）：先减半、后止损，state 机的 half_reduced 与逐根 step 一致。
+
+    隔离移动止盈（2026-09-15 起默认开启）：本场景带浮盈，开着会先触发移动止盈
+    并盖掉止损，就测不到目标状态机了。
+    """
     monkeypatch.setattr(ig, "IGNITION_UPPER_EXIT", "half")
+    monkeypatch.setattr(ig, "IGNITION_USE_TRAILING", False)
     df = gentle_ignition()
     entry = ignition_position_state(df)["entry_price"]
     df2 = _with_upper_touch_exit(df, entry, extra_flat=3)

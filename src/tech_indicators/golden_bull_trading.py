@@ -267,8 +267,6 @@ def _signal_candidates(
     life_line = lines.get("life_line")
     close = candles["close"]
     low = candles["low"]
-    high = candles["high"]
-    near_upper = _close_is_near_upper(channel_regime, candles, lines)
     trend_reclaim = (
         candles["is_bullish"]
         and low is not None
@@ -351,32 +349,6 @@ def _signal_candidates(
     }
 
 
-def _close_is_near_upper(
-    channel_regime: str,
-    candles: dict[str, Any],
-    lines: dict[str, float | None],
-) -> bool:
-    close = candles["close"]
-    upper = lines.get("upper_line")
-    if close is None or upper is None:
-        return False
-    if close >= upper:
-        return True
-
-    if channel_regime == "bull":
-        compare_line = lines.get("life_line")
-    elif channel_regime == "bear":
-        compare_line = lines.get("golden_bull_2")
-    else:
-        compare_line = None
-
-    if compare_line is not None and upper != compare_line:
-        return abs(upper - close) <= abs(close - compare_line)
-
-    distance_to_upper_pct = candles["distance_to_upper_pct"]
-    return distance_to_upper_pct is not None and -2.0 <= distance_to_upper_pct <= 3.0
-
-
 def _bull_ma20_pullback_confirmed(candles: dict[str, Any], lines: dict[str, float | None]) -> bool:
     close = candles["close"]
     low = candles["low"]
@@ -430,11 +402,18 @@ def _ma20_reburn_reclaim_confirmed(candles: dict[str, Any], lines: dict[str, flo
 
 
 def _cross_down(candles: dict[str, Any], line_price: float | None) -> bool:
-    open_ = candles["open"]
+    """收盘价自上而下跌破 ``line_price``（基准＝**前一交易日收盘价**）。
+
+    基准刻意不用「当日开盘价」：跳空低开时开盘已在线下，
+    ``open > line`` 直接不成立，会漏判真正的破位（昨收在线上一路跌破）。
+    例：上沿 99、昨收 100 在上方，今日跳空低开 97 收 96 —— 用开盘判据漏判，
+    用昨收判据正常触发。数据缺失（prev_close 为空）时返回 False，不做破位假设。
+    """
+    prev_close = candles["prev_close"]
     close = candles["close"]
-    if None in (open_, close, line_price):
+    if None in (prev_close, close, line_price):
         return False
-    return bool(open_ > line_price and close < line_price)
+    return bool(prev_close > line_price and close < line_price)
 
 
 def _buy_candle_gain_allowed(candles: dict[str, Any]) -> bool:
@@ -521,6 +500,7 @@ def _candle_context(metrics: dict[str, Any]) -> dict[str, Any]:
         "high": high,
         "low": low,
         "close": close,
+        "prev_close": _optional_float(metrics.get("prev_close")),
         "daily_return_pct": daily_return_pct,
         "distance_to_upper_pct": _optional_float(metrics.get("distance_to_upper_pct")),
         "volume_vs_prev_ratio": _optional_float(metrics.get("volume_vs_prev_ratio")),

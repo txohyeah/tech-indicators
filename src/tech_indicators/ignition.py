@@ -59,7 +59,7 @@ IGNITION_UPPER_TOUCH = 0.98      # 盘中触及上沿的容差
 IGNITION_MIN_BARS = 80
 # ---- 2026-09-05 因果版 + 15 槽组合层重测定稿（见 memory/2026-09-05/exit-rules-causal-final.md）----
 IGNITION_UPPER_EXIT = "full"         # 撞上沿的出场方式：full=全清（已验证）/ half=减半（会占槽位，组合层更差）
-IGNITION_USE_TRAILING = False        # 移动止盈默认关闭：关闭的 C2 在无前视池上年化与回撤都优于开启的 C3
+IGNITION_USE_TRAILING = True          # 移动止盈默认开启（2026-09-15 决策）：浮盈≥20% 后按「最高点−总涨幅×35%」离场
 IGNITION_REANCHOR = False            # 「新起爆点重锚止损」默认关闭：滚动止损已包含该效果，且旧结论出自坏引擎
 SUPPORTED_UPPER_EXITS = ("full", "half")
 
@@ -426,7 +426,7 @@ def build_ignition_trade_plan(
     if state["closed"]:
         reason_map = {
             "stop_loss": f"position already stopped out at {state['exit_date']} (close below {state['stop_line']})",
-            "trailing_take_profit": f"position already taken profit at {state['exit_date']} (gave back 25% of the gain)",
+            "trailing_take_profit": f"position already taken profit at {state['exit_date']} (gave back {IGNITION_TRAIL_FRACTION:.0%} of the gain)",
             "upper_pressure_bear_exit": f"position already exited at {state['exit_date']} (failed at Golden Bull upper line in bear channel)",
         }
         plan["action"] = "hold" if current_position_pct <= 0 else "sell_all"
