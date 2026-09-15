@@ -331,7 +331,7 @@ def _signal_candidates(
                 channel_regime == "bull"
                 and _cross_down(candles, upper)
             ),
-            "reason": "bull channel candle opens above and closes below the Golden Bull line",
+            "reason": "bull channel candle closes below the Golden Bull line after closing above it",
         },
         "bear_trial_buy": {
             "type": "bear_trial_buy",
