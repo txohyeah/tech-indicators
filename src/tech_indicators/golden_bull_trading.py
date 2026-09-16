@@ -18,9 +18,6 @@ STRONG_VOLUME_RATIO_MIN = 1.8
 STRONG_VOLUME_RATIO_MAX = 2.2
 BULL_MATURE_MIN_BARS = 42
 MAX_WEAK_BREAKOUT_GAIN_PCT = 5.0
-TAKE_PROFIT_DROP_THRESHOLD_FRACTION = 0.5
-TAKE_PROFIT_MIN_ENTRY_GAIN_FLOOR_PCT = 1.2
-TAKE_PROFIT_MIN_ENTRY_GAIN_VOLATILITY_MULTIPLIER = 1.2
 
 
 def build_golden_bull_trade_plan(
@@ -71,16 +68,6 @@ def build_golden_bull_trade_plan(
     entry_peak_gain_pct = _entry_peak_gain_pct(entry_high_price, entry_price)
     take_profit_entry_peak_gain_pct = _entry_peak_gain_pct(take_profit_entry_high_price, take_profit_entry_price)
     take_profit_entry_current_high_gain_pct = _entry_peak_gain_pct(candles["high"], take_profit_entry_price)
-    take_profit_entry_gain_confirmed = _take_profit_current_high_gain_confirmed(
-        candles["high"],
-        take_profit_entry_price,
-        candles["take_profit_min_entry_gain_pct"],
-    )
-    take_profit_exit_confirmed = _take_profit_exit_confirmed(
-        take_profit_entry_price=take_profit_entry_price,
-        take_profit_entry_gain_confirmed=take_profit_entry_gain_confirmed,
-        take_profit_drop_confirmed=candles["take_profit_drop_confirmed"],
-    )
 
     if (
         current_position_pct > 0
@@ -230,9 +217,6 @@ def build_golden_bull_trade_plan(
         "prev_ma20_ma60_spread_pct": candles["prev_ma20_ma60_spread_pct"],
         "ma20_ma60_spread_widening": candles["ma20_ma60_spread_widening"],
         "avg_abs_return_10_pct": candles["avg_abs_return_10_pct"],
-        "take_profit_drop_threshold_pct": candles["take_profit_drop_threshold_pct"],
-        "take_profit_drop_confirmed": candles["take_profit_drop_confirmed"],
-        "take_profit_min_entry_gain_pct": candles["take_profit_min_entry_gain_pct"],
         "entry_price": entry_price,
         "entry_high_price": entry_high_price,
         "entry_peak_gain_pct": entry_peak_gain_pct,
@@ -240,8 +224,6 @@ def build_golden_bull_trade_plan(
         "take_profit_entry_high_price": take_profit_entry_high_price,
         "take_profit_entry_peak_gain_pct": take_profit_entry_peak_gain_pct,
         "take_profit_entry_current_high_gain_pct": take_profit_entry_current_high_gain_pct,
-        "entry_peak_gain_confirmed": take_profit_entry_gain_confirmed,
-        "take_profit_exit_confirmed": take_profit_exit_confirmed,
         "entry_candle_low_price": entry_candle_low_price,
         "add_on_entry_low_price": add_on_entry_low_price,
         "add_on_stop_target_position_pct": add_on_stop_target_position_pct,
@@ -486,12 +468,6 @@ def _candle_context(metrics: dict[str, Any]) -> dict[str, Any]:
     close = _optional_float(metrics.get("close"))
     daily_return_pct = _optional_float(metrics.get("daily_return_pct"))
     avg_abs_return_10_pct = _optional_float(metrics.get("avg_abs_return_10_pct"))
-    take_profit_drop_threshold_pct = (
-        avg_abs_return_10_pct * TAKE_PROFIT_DROP_THRESHOLD_FRACTION
-        if avg_abs_return_10_pct is not None
-        else None
-    )
-    take_profit_min_entry_gain_pct = _take_profit_min_entry_gain_pct(avg_abs_return_10_pct)
     return {
         "open": open_,
         "high": high,
@@ -515,20 +491,9 @@ def _candle_context(metrics: dict[str, Any]) -> dict[str, Any]:
         "prev_ma20_ma60_spread_pct": _optional_float(metrics.get("prev_ma20_ma60_spread_pct")),
         "ma20_ma60_spread_widening": bool(metrics.get("ma20_ma60_spread_widening")),
         "avg_abs_return_10_pct": avg_abs_return_10_pct,
-        "take_profit_drop_threshold_pct": take_profit_drop_threshold_pct,
-        "take_profit_drop_confirmed": _take_profit_drop_confirmed(daily_return_pct, take_profit_drop_threshold_pct),
-        "take_profit_min_entry_gain_pct": take_profit_min_entry_gain_pct,
         "is_bullish": open_ is not None and close is not None and close > open_,
         "is_bearish": open_ is not None and close is not None and close < open_,
     }
-
-
-def _take_profit_drop_confirmed(daily_return_pct: float | None, threshold_pct: float | None) -> bool:
-    if threshold_pct is None:
-        return True
-    if daily_return_pct is None:
-        return False
-    return daily_return_pct < 0 and abs(daily_return_pct) > threshold_pct
 
 
 def _open_close_gain_pct(open_: float | None, close: float | None) -> float | None:
@@ -558,39 +523,6 @@ def _entry_peak_gain_pct(entry_high_price: float | None, entry_price: float | No
     if entry_high_price is None:
         return None
     return (entry_high_price / entry_price - 1.0) * 100.0
-
-
-def _take_profit_min_entry_gain_pct(avg_abs_return_10_pct: float | None) -> float:
-    if avg_abs_return_10_pct is None:
-        return TAKE_PROFIT_MIN_ENTRY_GAIN_FLOOR_PCT
-    return max(
-        TAKE_PROFIT_MIN_ENTRY_GAIN_FLOOR_PCT,
-        avg_abs_return_10_pct * TAKE_PROFIT_MIN_ENTRY_GAIN_VOLATILITY_MULTIPLIER,
-    )
-
-
-def _take_profit_current_high_gain_confirmed(
-    current_high_price: float | None,
-    entry_price: float | None,
-    threshold_pct: float | None,
-) -> bool:
-    if entry_price is None or entry_price <= 0:
-        return True
-    current_high_gain_pct = _entry_peak_gain_pct(current_high_price, entry_price)
-    if current_high_gain_pct is None:
-        return False
-    return current_high_gain_pct > (threshold_pct or TAKE_PROFIT_MIN_ENTRY_GAIN_FLOOR_PCT)
-
-
-def _take_profit_exit_confirmed(
-    *,
-    take_profit_entry_price: float | None,
-    take_profit_entry_gain_confirmed: bool,
-    take_profit_drop_confirmed: bool,
-) -> bool:
-    if take_profit_entry_price is not None and take_profit_entry_price > 0:
-        return take_profit_entry_gain_confirmed
-    return take_profit_drop_confirmed
 
 
 def _effective_channel_regime(raw_channel_regime: str, candles: dict[str, Any]) -> str:

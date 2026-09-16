@@ -1468,7 +1468,7 @@ def check_golden_bull_position_rating(
     # 破位口径（2026-09-16 决策，承接 2026-09-15「只保留破位、不要贴价预警」）：
     # 旧口径是「贴近上沿」（距上沿 -2%~+3%）的贴价预警，现统一改为破位事件 ——
     # 前一交易日收盘价仍在上沿之上、当日收盘价跌破上沿，与 golden_bull_trading._cross_down 同基准。
-    # 变量名沿用 near_upper（4 个场景共用：upper_pressure_bearish / bull_pressure / bear_pressure / upper_exhaustion）。
+    # 变量名沿用 near_upper（3 个场景共用：upper_pressure_bearish / bull_pressure / upper_exhaustion）。
     near_upper = (
         prev_close is not None
         and channel_upper_latest is not None
@@ -1507,10 +1507,10 @@ def check_golden_bull_position_rating(
     lower_panic = low < channel_lower_latest * 0.94 and close > low * 1.03
     is_bearish_candle = close < open_
     # 压力场景统一到破位口径：原先允许「盘中摸到上沿 98%」顶上（贴价的另一种代理），
-    # 2026-09-16 一并去掉，三个压力场景只看「昨收在上沿之上、今收跌破上沿」。
+    # 2026-09-16 一并去掉，压力场景只看「昨收在上沿之上、今收跌破上沿」。
+    # bear_pressure（熊市里非阴线摸上沿）同日删除：它的触发几乎全靠贴价代理，改成破位后 400 bar 样本内归零。
     upper_pressure_bearish = is_bearish_candle and near_upper
     bull_pressure = channel_regime == "bull" and near_upper
-    bear_pressure = channel_regime == "bear" and not is_bearish_candle and near_upper
     upper_below_pressure = (
         channel_regime == "bull"
         and not upper_support
@@ -1558,7 +1558,6 @@ def check_golden_bull_position_rating(
         "bull_channel_pullback": bull_channel_pullback,
         "lower_panic": lower_panic,
         "bull_pressure": bull_pressure,
-        "bear_pressure": bear_pressure,
         "upper_pressure_bearish": upper_pressure_bearish,
         "upper_below_pressure": upper_below_pressure,
         "channel_squeeze": channel_squeeze,
@@ -1584,7 +1583,7 @@ def check_golden_bull_position_rating(
     ratings = _apply_golden_rating_modifiers(base_ratings, auxiliary_signals)
     ratings = _suppress_unconfirmed_bullish_actions(ratings, unconfirmed_sharp_bearish)
     ratings = _apply_upper_shadow_constraint(ratings, upper_shadow_state)
-    ratings = _suppress_upper_pressure_new_positions(ratings, bear_pressure or upper_pressure_bearish)
+    ratings = _suppress_upper_pressure_new_positions(ratings, upper_pressure_bearish)
     clearance_state = _golden_clearance_state(
         is_bearish_candle=is_bearish_candle,
         close=close,
@@ -2054,11 +2053,6 @@ _SCENE_RATINGS: dict[str, dict[str, list[tuple[str, int, str]]]] = {
         "bull": [("持有", 4, "牛市里趋势权重大于压力权重。"), ("减仓", 2, "只在压力位明显滞涨时轻微降仓。")],
         "bear": [("不适用", 0, "该场景定义为牛市通道。")],
         "neutral": [("持有", 3, "接近压力但未出现明显风险确认。")],
-    },
-    "bear_pressure": {
-        "bull": [("不适用", 0, "该场景定义为熊市通道。")],
-        "bear": [("观察", 4, "熊市通道接近上轨压力，但当日尚未收阴确认转弱。"), ("减仓", 2, "压力环境下可轻微降低仓位，但不宜提前退出。")],
-        "neutral": [("减仓", 3, "压力位失败时先保护仓位。")],
     },
     "upper_pressure_bearish": {
         "bull": [("减仓", 3, "上轨附近出现阴线，短线承压但趋势结构尚未确认破坏。"), ("观察", 3, "等待上轨支撑是否继续有效。")],

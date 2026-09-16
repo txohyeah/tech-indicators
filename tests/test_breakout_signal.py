@@ -96,7 +96,8 @@ def test_golden_position_near_upper_switched_to_breakdown_basis():
 
     旧口径：距上沿 -2%~+3% 即算贴价（``-2.0 <= upper_distance_pct <= 3.0``）。
     新口径：前一交易日收盘价仍在上沿之上、当日收盘价跌破上沿。
-    三个场景（upper_pressure_bearish / bull_pressure / bear_pressure）共用该变量，故一并生效。
+    共用该变量的场景（upper_pressure_bearish / bull_pressure / upper_exhaustion）一并生效；
+    bear_pressure 因为触发几乎全靠贴价代理，已于同日删除。
     """
     import inspect
 
