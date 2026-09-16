@@ -28,8 +28,6 @@ def build_golden_bull_trade_plan(
     stop_line_price: float | None = None,
     entry_price: float | None = None,
     entry_high_price: float | None = None,
-    take_profit_entry_price: float | None = None,
-    take_profit_entry_high_price: float | None = None,
     entry_candle_low_price: float | None = None,
     add_on_entry_low_price: float | None = None,
     add_on_stop_target_position_pct: float | None = None,
@@ -61,13 +59,7 @@ def build_golden_bull_trade_plan(
         candles=candles,
     )
 
-    take_profit_entry_price = take_profit_entry_price if take_profit_entry_price is not None else entry_price
-    take_profit_entry_high_price = (
-        take_profit_entry_high_price if take_profit_entry_high_price is not None else entry_high_price
-    )
     entry_peak_gain_pct = _entry_peak_gain_pct(entry_high_price, entry_price)
-    take_profit_entry_peak_gain_pct = _entry_peak_gain_pct(take_profit_entry_high_price, take_profit_entry_price)
-    take_profit_entry_current_high_gain_pct = _entry_peak_gain_pct(candles["high"], take_profit_entry_price)
 
     if (
         current_position_pct > 0
@@ -220,10 +212,6 @@ def build_golden_bull_trade_plan(
         "entry_price": entry_price,
         "entry_high_price": entry_high_price,
         "entry_peak_gain_pct": entry_peak_gain_pct,
-        "take_profit_entry_price": take_profit_entry_price,
-        "take_profit_entry_high_price": take_profit_entry_high_price,
-        "take_profit_entry_peak_gain_pct": take_profit_entry_peak_gain_pct,
-        "take_profit_entry_current_high_gain_pct": take_profit_entry_current_high_gain_pct,
         "entry_candle_low_price": entry_candle_low_price,
         "add_on_entry_low_price": add_on_entry_low_price,
         "add_on_stop_target_position_pct": add_on_stop_target_position_pct,
