@@ -1495,7 +1495,16 @@ def check_golden_bull_position_rating(
         and (volume_ratio is None or volume_ratio <= 1.2)
     )
     lower_panic = low < channel_lower_latest * 0.94 and close > low * 1.03
-    near_upper = upper_distance_pct is not None and -2.0 <= upper_distance_pct <= 3.0
+    # 破位口径（2026-09-16 决策，承接 2026-09-15「只保留破位、不要贴价预警」）：
+    # 原口径是「贴近上沿」（距上沿 -2%~+3%）的贴价预警，现统一改为破位事件 ——
+    # 前一交易日收盘价仍在上沿之上、当日收盘价跌破上沿，与 golden_bull_trading._cross_down 同口径。
+    # 变量名沿用 near_upper（三个场景 upper_pressure_bearish / bull_pressure / bear_pressure 共用）。
+    near_upper = (
+        prev_close is not None
+        and channel_upper_latest is not None
+        and prev_close > channel_upper_latest
+        and close < channel_upper_latest
+    )
     is_bearish_candle = close < open_
     upper_pressure_bearish = (
         is_bearish_candle

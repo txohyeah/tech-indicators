@@ -89,3 +89,20 @@ def test_candle_context_prev_close_defaults_to_none():
 def test_near_upper_helper_is_removed():
     """贴价预警口径（_close_is_near_upper）已删除，防止被改回来。"""
     assert not hasattr(gbt, "_close_is_near_upper")
+
+
+def test_golden_position_near_upper_switched_to_breakdown_basis():
+    """`near_upper` 由「贴近上沿」改为「破位」口径（2026-09-16 决策，与 `_cross_down` 同口径）。
+
+    旧口径：距上沿 -2%~+3% 即算贴价（``-2.0 <= upper_distance_pct <= 3.0``）。
+    新口径：前一交易日收盘价仍在上沿之上、当日收盘价跌破上沿。
+    三个场景（upper_pressure_bearish / bull_pressure / bear_pressure）共用该变量，故一并生效。
+    """
+    import inspect
+
+    from tech_indicators.indicators import check_golden_bull_position_rating
+
+    src = inspect.getsource(check_golden_bull_position_rating)
+    assert "-2.0 <= upper_distance_pct <= 3.0" not in src, "贴价口径不得回归"
+    assert "prev_close > channel_upper_latest" in src, "破位基准应为前一交易日收盘价"
+    assert "close < channel_upper_latest" in src, "破位需当日收盘价跌破上沿"

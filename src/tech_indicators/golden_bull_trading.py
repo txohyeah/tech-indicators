@@ -11,8 +11,6 @@ BEAR_MAX_POSITION_PCT = BEAR_REBALANCE_TRIGGER_POSITION_PCT
 BEAR_SELL_TARGET_POSITION_PCT = 0.2
 BULL_MIN_REDUCE_TARGET_POSITION_PCT = 0.2
 BULL_TREND_REDUCE_FRACTION = 0.3
-BULL_TAKE_PROFIT_REDUCE_FRACTION = 1.0 / 3.0
-BEAR_TAKE_PROFIT_REDUCE_FRACTION = 0.5
 MAX_STRONG_RECLAIM_GAIN_PCT = 10.0
 MAX_BUY_CANDLE_GAIN_PCT = 8.0
 MAX_STRONG_RECLAIM_DISTANCE_PCT = 5.0
@@ -31,7 +29,6 @@ def build_golden_bull_trade_plan(
     current_position_pct: float = 0.0,
     stop_line_name: str | None = None,
     stop_line_price: float | None = None,
-    take_profit_reduced: bool = False,
     entry_price: float | None = None,
     entry_high_price: float | None = None,
     take_profit_entry_price: float | None = None,
