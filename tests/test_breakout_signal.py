@@ -106,3 +106,5 @@ def test_golden_position_near_upper_switched_to_breakdown_basis():
     assert "-2.0 <= upper_distance_pct <= 3.0" not in src, "贴价口径不得回归"
     assert "prev_close > channel_upper_latest" in src, "破位基准应为前一交易日收盘价"
     assert "close < channel_upper_latest" in src, "破位需当日收盘价跌破上沿"
+    # 压力场景里的另一个贴价代理（盘中摸到上沿 98% 就顶上）2026-09-16 一并删除
+    assert "high >= channel_upper_latest * 0.98" not in src, "「摸上沿 98%」代理不得回归"
